@@ -2,6 +2,10 @@
 
 Run these examples from the repository root unless noted. Replace paths with your own; outputs should be **new** paths. No datasets or model weights are in Git.
 
+These examples retain the original M300 training profile. For another sensor,
+configure `--topic`, `--frame-id`, and `--intensity-field` during extraction
+and the matching live input settings; see [ANY_LIDAR.md](ANY_LIDAR.md).
+
 ## 1. Record raw MCAP
 
 Start the LiDAR driver first. Record raw inputs, not just person crops or front-ROI points:

@@ -4,6 +4,11 @@ ROS 2 LiDAR perception for indoor person detection, short-term tracking, and cla
 
 Built around a **Pacecat LDS-M300-E**, **OpenPCDet PointPillars**, and **RViz 2**. The project covers the complete workflow: record MCAP bags, accumulate point clouds, label in CVAT, prepare a custom dataset, train, and visualize live detections.
 
+**The runtime is not locked to M300.** It can consume compatible ROS 2
+`PointCloud2` from another driver's topic/frame. M300 remains the bundled
+development example; using another sensor does not guarantee that the M300
+checkpoint will generalize. See [using a different LiDAR](docs/ANY_LIDAR.md).
+
 This is a portfolio project by [PakkaponBon](https://github.com/PakkaponBon). The companion project, [ros2-warehouse-traffic-monitor](https://github.com/PakkaponBon/ros2-warehouse-traffic-monitor), focuses on warehouse vehicle localization, traffic recording, congestion analysis, and historical heatmaps. The two repositories demonstrate complementary perception and monitoring work; **this repository does not claim an implemented cross-repository integration**.
 
 ## What is implemented
@@ -39,6 +44,7 @@ tools/visualization/        Optional BEV and Open3D label/prediction viewers
 tools/install_openpcdet_overlay.py
 configs/openpcdet/          PointPillars and custom dataset YAML
 scripts/                   AI + LiDAR + RViz / obstacle + RViz launchers
+                           + driver-independent start_perception.sh
 rviz/                      Two ready-to-use RViz presets
 ros2_ws/src/                pacecat_m300_driver + pacecat_m300_inter
 patches/                   Pinned OpenPCDet compatibility changes
@@ -50,6 +56,17 @@ third_party/               Upstream attribution and license notices
 ## Quick start
 
 Environment used: Ubuntu 22.04, ROS 2 Humble, Python 3.10, and an NVIDIA CUDA-capable GPU for AI inference. Geometric obstacle monitoring does **not** need OpenPCDet or a GPU.
+
+Already have another driver publishing a 3D point cloud?
+
+```bash
+PERCEPTION_INPUT_TOPIC=/vendor/points PERCEPTION_FRAME_ID=lidar_front \
+  ./scripts/start_perception.sh obstacle
+```
+
+This entry point starts no LiDAR driver. For AI, select the input field,
+model, and weights as described in [the generic setup](docs/ANY_LIDAR.md).
+The original M300-specific commands below are retained.
 
 1. Follow [setup](docs/SETUP.md) to build the ROS packages and, for AI, install OpenPCDet plus the overlay.
 2. For AI, export your own paths. Weights are intentionally not published:
@@ -100,7 +117,7 @@ A later small-dataset fine-tune reported 71.41% on its **different, 32-frame val
 ```bash
 python3 -m pip install -r requirements-offline.txt
 python3 -m unittest discover -s tests -v
-bash -n scripts/start_m300_detection.sh scripts/start_m300_obstacle.sh
+bash -n scripts/start_perception.sh scripts/start_m300_detection.sh scripts/start_m300_obstacle.sh
 ```
 
 Checks do not launch ROS nodes, train a model, or access a sensor. An optional

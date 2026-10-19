@@ -9,15 +9,18 @@ import argparse
 import csv
 import json
 import hashlib
+import sys
 from collections import deque
 from pathlib import Path
 
 import numpy as np
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from runtime.lidar_input import InputSettings, decode_xyzi
 
 
-def standard(bounds, decay_time=0):
+def standard(bounds, decay_time=0, frame_id='m300_lidar', intensity_field='intensity'):
     profile = dict(version='m300-xyzi-single-v1', features=['x', 'y', 'z', 'intensity'],
-                dtype='<f4', coordinate_frame='m300_lidar', length_unit='metre',
+                dtype='<f4', coordinate_frame=frame_id, length_unit='metre',
                 coordinates='unchanged sensor coordinates; no transform',
                 intensity='raw, unnormalized; zero retained',
                 nonfinite_policy='drop point if any XYZI value is nonfinite',
@@ -32,6 +35,11 @@ def standard(bounds, decay_time=0):
                        warmup='emit partial windows',
                        timestamp_basis='message header; not per-point timestamp',
                        motion_policy='uncompensated sensor-frame concatenation')
+    # Preserve historical M300 profile/hash for unchanged defaults.
+    if frame_id != 'm300_lidar' or intensity_field != 'intensity':
+        profile['version'] = ('lidar-xyzi-temporal-v1' if decay_time > 0
+                              else 'lidar-xyzi-single-v1')
+        profile['source_intensity_field'] = intensity_field
     return profile
 
 
@@ -54,34 +62,9 @@ class TemporalBuffer:
         return points, counts
 
 
-def extract_points(msg):
-    """Respect field offsets, byte order, point padding and row padding."""
-    types = {1: 'i1', 2: 'u1', 3: 'i2', 4: 'u2', 5: 'i4',
-             6: 'u4', 7: 'f4', 8: 'f8'}
-    names = ['x', 'y', 'z', 'intensity']
-    fields = {f.name: f for f in msg.fields}
-    missing = set(names) - fields.keys()
-    if missing:
-        raise ValueError(f'Missing required fields: {sorted(missing)}')
-    endian = '>' if msg.is_bigendian else '<'
-    formats, offsets = [], []
-    for name in names:
-        field = fields[name]
-        if field.count != 1 or field.datatype not in types:
-            raise ValueError(f'Unsupported scalar field: {name}')
-        formats.append(endian + types[field.datatype])
-        offsets.append(field.offset)
-    dtype = np.dtype(dict(names=names, formats=formats, offsets=offsets,
-                         itemsize=msg.point_step))
-    if msg.width == 0 or msg.height == 0:
-        return np.empty((0, 4), dtype='<f4')
-    if msg.row_step < msg.width * msg.point_step:
-        raise ValueError('Invalid row_step')
-    if len(msg.data) < msg.row_step * msg.height:
-        raise ValueError('Truncated PointCloud2 data')
-    rows = np.ndarray((msg.height, msg.width), dtype=dtype, buffer=msg.data,
-                      strides=(msg.row_step, msg.point_step))
-    return np.column_stack([rows[n].reshape(-1) for n in names]).astype('<f4')
+def extract_points(msg, intensity_field='intensity'):
+    """Use the same scalar XYZI decoder as live inference."""
+    return decode_xyzi(msg, intensity_field)
 
 
 def main():
@@ -90,6 +73,10 @@ def main():
     parser.add_argument('--output', required=True, type=Path,
                         help='New directory; existing output is never overwritten')
     parser.add_argument('--topic', default='/pointcloud')
+    parser.add_argument('--frame-id', default='m300_lidar',
+                        help='Require this exact source frame; no automatic TF conversion')
+    parser.add_argument('--intensity-field', default='intensity',
+                        help='Scalar intensity field name (e.g. reflectivity); no normalization')
     parser.add_argument('--decay-time', type=float, default=0.0,
                         help='Trailing header-time window in seconds; default 0 = one frame')
     parser.add_argument('--allow-uncompensated', action='store_true',
@@ -117,7 +104,11 @@ def main():
     if args.bounds and (not np.isfinite(args.bounds).all() or
                         np.any(np.array(args.bounds[:3]) >= args.bounds[3:])):
         parser.error('Bounds must be finite with minimum < maximum')
-    profile = standard(args.bounds, args.decay_time)
+    try:
+        InputSettings(args.topic, args.frame_id, args.intensity_field, args.decay_time)
+    except ValueError as error:
+        parser.error(str(error))
+    profile = standard(args.bounds, args.decay_time, args.frame_id, args.intensity_field)
     signature = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()
     if args.reference_manifest:
         reference = json.loads(args.reference_manifest.read_text())
@@ -163,12 +154,12 @@ def main():
             seen += 1
             msg = deserialize_message(data, PointCloud2)
             stamp = msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec
-            if msg.header.frame_id != 'm300_lidar':
+            if msg.header.frame_id != args.frame_id:
                 raise ValueError(f'Unexpected frame: {msg.header.frame_id!r}; no automatic transform')
             if stamp <= 0 or (previous_stamp is not None and stamp <= previous_stamp):
                 raise ValueError('Header timestamps must be positive and strictly increasing')
             previous_stamp = stamp
-            points = extract_points(msg)
+            points = extract_points(msg, args.intensity_field)
             raw = len(points)
             points = points[np.isfinite(points).all(axis=1)]
             invalid = raw - len(points)

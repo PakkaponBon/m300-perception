@@ -2,6 +2,11 @@
 
 These are user-run installation commands. Launchers never configure the network, install dependencies, build packages, or download weights automatically.
 
+The driver build in section 1 is **optional for non-M300 sensors**. If your
+own driver already publishes PointCloud2, use the
+[driver-independent entry point](ANY_LIDAR.md) instead; no M300 workspace is
+required for the core perception nodes.
+
 ## 1. Clone and build the LiDAR workspace
 
 Prerequisites: Ubuntu 22.04, ROS 2 Humble desktop, colcon, and rosdep. The ROS packages and SDK are included under `ros2_ws/src`.

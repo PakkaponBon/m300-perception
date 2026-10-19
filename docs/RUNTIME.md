@@ -1,6 +1,9 @@
 # Runtime interfaces and settings
 
-All measurements are sensor-relative metres in `m300_lidar`. No TF transform, global localization, or persistent map is supplied.
+All measurements are sensor-relative metres. `m300_lidar` is the original
+default, not a fixed requirement; topic/frame and AI field/model settings are
+configurable as described in [ANY_LIDAR.md](ANY_LIDAR.md). No TF transform,
+global localization, or persistent map is supplied.
 
 ## AI path
 

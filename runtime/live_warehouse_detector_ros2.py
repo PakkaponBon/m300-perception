@@ -13,12 +13,14 @@ from collections import deque
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
+from rcl_interfaces.msg import ParameterDescriptor
+from lidar_input import InputSettings, decode_xyzi
 from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
-from sensor_msgs_py import point_cloud2
 
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
@@ -32,7 +34,8 @@ from m300_person_tracker import PersonTracker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OPENPCDET_ROOT = Path(os.environ.get(
-    "M300_OPENPCDET_ROOT", str(PROJECT_ROOT.parent / "OpenPCDet")
+    "PERCEPTION_OPENPCDET_ROOT", os.environ.get(
+        "M300_OPENPCDET_ROOT", str(PROJECT_ROOT.parent / "OpenPCDet"))
 )).expanduser().resolve()
 
 sys.path.insert(0, str(OPENPCDET_ROOT))
@@ -42,13 +45,14 @@ from pcdet.datasets.dataset import DatasetTemplate
 from pcdet.models import build_network, load_data_to_gpu
 
 
-CFG_FILE = (
-    OPENPCDET_ROOT
-    / "tools/cfgs/custom_models/pointpillar_m300_decay03.yaml"
-)
+CFG_FILE = Path(os.environ.get(
+    "PERCEPTION_MODEL_CONFIG",
+    str(OPENPCDET_ROOT / "tools/cfgs/custom_models/pointpillar_m300_decay03.yaml")
+)).expanduser().resolve()
 
 CKPT_FILE = Path(os.environ.get(
-    "M300_CHECKPOINT", str(PROJECT_ROOT / "models" / "model.pth")
+    "PERCEPTION_CHECKPOINT", os.environ.get(
+        "M300_CHECKPOINT", str(PROJECT_ROOT / "models" / "model.pth"))
 )).expanduser().resolve()
 
 DATA_ROOT = OPENPCDET_ROOT / "data/custom"
@@ -479,12 +483,12 @@ def make_delete_marker(
 # Detector node
 # ================================================================
 
-def make_lidar_origin_markers():
+def make_lidar_origin_markers(frame_id=EXPECTED_FRAME_ID):
     """A schematic sensor icon and label, always at the LiDAR frame origin."""
     markers = []
     for marker_id, marker_type in enumerate((Marker.CYLINDER, Marker.TEXT_VIEW_FACING)):
         marker = Marker()
-        marker.header.frame_id = EXPECTED_FRAME_ID
+        marker.header.frame_id = frame_id
         marker.header.stamp = Time()
         marker.ns = "lidar_origin"
         marker.id = marker_id
@@ -508,7 +512,7 @@ def make_lidar_origin_markers():
     return MarkerArray(markers=markers)
 
 
-def make_zone_markers(deadzone_radius, warning_radius):
+def make_zone_markers(deadzone_radius, warning_radius, frame_id=EXPECTED_FRAME_ID):
     """Display three labelled rings, independent of whether anyone is detected.
 
     The green ring is a visual guide, not a maximum detection range. NORMAL
@@ -525,7 +529,7 @@ def make_zone_markers(deadzone_radius, warning_radius):
     markers = []
     for zone_index, radius in enumerate(radii):
         ring = Marker()
-        ring.header.frame_id = EXPECTED_FRAME_ID
+        ring.header.frame_id = frame_id
         ring.header.stamp = Time()
         ring.ns = "detection_zones"
         ring.id = 2 * zone_index
@@ -541,7 +545,7 @@ def make_zone_markers(deadzone_radius, warning_radius):
         ]
         markers.append(ring)
         text = Marker()
-        text.header.frame_id = EXPECTED_FRAME_ID
+        text.header.frame_id = frame_id
         text.header.stamp = Time()
         text.ns = "detection_zones"
         text.id = 2 * zone_index + 1
@@ -561,6 +565,20 @@ class WarehouseDetectorNode(Node):
         super().__init__(
             "warehouse_3d_detector"
         )
+        descriptor = ParameterDescriptor(read_only=True)
+
+        def param(name, default):
+            return self.declare_parameter(name, default, descriptor).value
+
+        self.input_settings = InputSettings(
+            input_topic=param("input_topic", POINT_TOPIC),
+            expected_frame_id=param("expected_frame_id", EXPECTED_FRAME_ID),
+            intensity_field=param("intensity_field", "intensity"),
+            decay_time_sec=float(param("decay_time_sec", DECAY_TIME_SEC)),
+            score_threshold=float(param("score_threshold", SCORE_THRESH)),
+        )
+        self.config_file = Path(param("model_config", str(CFG_FILE))).expanduser().resolve()
+        self.checkpoint_file = Path(param("checkpoint", str(CKPT_FILE))).expanduser().resolve()
         self.deadzone_radius = float(self.declare_parameter(
             "deadzone_radius_m", DEFAULT_DEADZONE_RADIUS_M,
         ).value)
@@ -577,8 +595,8 @@ class WarehouseDetectorNode(Node):
         self.tracking_enabled = self.declare_parameter("tracking_enabled", True).value
         hold_seconds = float(self.declare_parameter("tracking_hold_seconds", TRACKING_HOLD_SEC).value)
         self.tracker = PersonTracker(
-            start_score=SCORE_THRESH,
-            keep_score=float(self.declare_parameter("tracking_keep_score", TRACKING_KEEP_SCORE).value),
+            start_score=self.input_settings.score_threshold,
+            keep_score=float(self.declare_parameter("tracking_keep_score", self.input_settings.score_threshold).value),
             hold_seconds=hold_seconds,
             match_distance=float(self.declare_parameter("tracking_match_distance_m", TRACKING_MATCH_DISTANCE_M).value),
             min_hits=self.declare_parameter("tracking_min_hits", TRACKING_MIN_HITS).value,
@@ -587,16 +605,16 @@ class WarehouseDetectorNode(Node):
         self.tracking_input_timeout = min(hold_seconds, MARKER_LIFETIME_SEC)
         self.last_tracking_update = None
 
-        if not CFG_FILE.is_file():
+        if not self.config_file.is_file():
             raise FileNotFoundError(
                 f"Config file not found: "
-                f"{CFG_FILE}"
+                f"{self.config_file}"
             )
 
-        if not CKPT_FILE.is_file():
+        if not self.checkpoint_file.is_file():
             raise FileNotFoundError(
                 f"Checkpoint not found: "
-                f"{CKPT_FILE}"
+                f"{self.checkpoint_file}"
             )
 
         if not torch.cuda.is_available():
@@ -627,7 +645,7 @@ class WarehouseDetectorNode(Node):
         self.subscription = (
             self.create_subscription(
                 PointCloud2,
-                POINT_TOPIC,
+                self.input_settings.input_topic,
                 self.points_callback,
                 qos_profile_sensor_data,
             )
@@ -636,7 +654,7 @@ class WarehouseDetectorNode(Node):
         self.frame_count = 0
         self.busy = False
         self.point_buffer = deque()
-        self.decay_time_ns = round(DECAY_TIME_SEC * 1_000_000_000)
+        self.decay_time_ns = round(self.input_settings.decay_time_sec * 1_000_000_000)
 
         # Track IDs stay stable even when prediction score ordering changes.
         self.previous_marker_ids = set()
@@ -650,14 +668,14 @@ class WarehouseDetectorNode(Node):
         )
 
         self.get_logger().info(
-            f"Loading config: {CFG_FILE}"
+            f"Loading config: {self.config_file}"
         )
 
         # OpenPCDet resolves _BASE_CONFIG_ relative to its tools directory.
         previous_directory = Path.cwd()
         try:
             os.chdir(OPENPCDET_ROOT / "tools")
-            cfg_from_yaml_file(str(CFG_FILE), cfg)
+            cfg_from_yaml_file(str(self.config_file), cfg)
         finally:
             os.chdir(previous_directory)
 
@@ -683,11 +701,11 @@ class WarehouseDetectorNode(Node):
 
         self.get_logger().info(
             f"Loading checkpoint: "
-            f"{CKPT_FILE}"
+            f"{self.checkpoint_file}"
         )
 
         self.model.load_params_from_file(
-            filename=str(CKPT_FILE),
+            filename=str(self.checkpoint_file),
             logger=self.logger_py,
             to_cpu=False,
         )
@@ -705,7 +723,13 @@ class WarehouseDetectorNode(Node):
         )
 
         self.get_logger().info(
-            f"Point topic: {POINT_TOPIC}"
+            f"Point topic: {self.input_settings.input_topic}"
+        )
+        self.get_logger().info(
+            f"Input frame: {self.input_settings.expected_frame_id}; "
+            f"intensity field: {self.input_settings.intensity_field}; "
+            f"window: {self.input_settings.decay_time_sec:g}s; no automatic transform. "
+            "A different sensor may require different training data and weights."
         )
 
         self.get_logger().info(
@@ -725,19 +749,20 @@ class WarehouseDetectorNode(Node):
 
         self.get_logger().info(
             f"Score threshold: "
-            f"{SCORE_THRESH:.2f}"
+            f"{self.input_settings.score_threshold:.2f}"
         )
         self.get_logger().info(
             f"Tracking {'enabled' if self.tracking_enabled else 'disabled'}: "
-            f"confirm {self.tracker.min_hits} consecutive detections >= {SCORE_THRESH:.2f}; "
+            f"confirm {self.tracker.min_hits} consecutive detections >= {self.input_settings.score_threshold:.2f}; "
             f"keep >= {self.tracker.keep_score:.2f}; match within {self.tracker.match_distance:g} m; "
             f"hold <= {hold_seconds:g}s. HOLD uses the last box/score, not a new detection. "
             "No ego-motion correction or velocity prediction."
         )
 
     def publish_lidar_origin(self):
-        marker_array = make_lidar_origin_markers()
-        marker_array.markers.extend(make_zone_markers(self.deadzone_radius, self.warning_radius))
+        marker_array = make_lidar_origin_markers(self.input_settings.expected_frame_id)
+        marker_array.markers.extend(make_zone_markers(self.deadzone_radius, self.warning_radius,
+                                                    self.input_settings.expected_frame_id))
         self.publisher.publish(marker_array)
 
     def publish_person_points(self, header, points, detections):
@@ -758,9 +783,9 @@ class WarehouseDetectorNode(Node):
                 and time.monotonic() - self.last_tracking_update >= self.tracking_input_timeout):
             self.tracker.reset()
             self.last_tracking_update = None
-            self.publish_detections(PointCloud2(header=Header(frame_id=EXPECTED_FRAME_ID)), [])
+            self.publish_detections(PointCloud2(header=Header(frame_id=self.input_settings.expected_frame_id)), [])
             self.publish_person_points(
-                Header(frame_id=EXPECTED_FRAME_ID), np.empty((0, 4), dtype=np.float32), [],
+                Header(frame_id=self.input_settings.expected_frame_id), np.empty((0, 4), dtype=np.float32), [],
             )
         # Clear both visualization clouds independently if their updates stop.
         if (
@@ -768,7 +793,7 @@ class WarehouseDetectorNode(Node):
             and time.monotonic() - self.last_background_cloud_time >= MARKER_LIFETIME_SEC
         ):
             self.background_points_publisher.publish(make_xyzi_cloud(
-                Header(frame_id=EXPECTED_FRAME_ID), np.empty((0, 4), dtype=np.float32),
+                Header(frame_id=self.input_settings.expected_frame_id), np.empty((0, 4), dtype=np.float32),
             ))
             self.last_background_cloud_time = None
         if self.last_person_cloud_time is None:
@@ -776,7 +801,7 @@ class WarehouseDetectorNode(Node):
         if time.monotonic() - self.last_person_cloud_time < MARKER_LIFETIME_SEC:
             return
         self.person_points_publisher.publish(make_xyzi_cloud(
-            Header(frame_id=EXPECTED_FRAME_ID), np.empty((0, 4), dtype=np.float32),
+            Header(frame_id=self.input_settings.expected_frame_id), np.empty((0, 4), dtype=np.float32),
             np.empty(0, dtype=np.uint32),
         ))
         self.last_person_cloud_time = None
@@ -790,57 +815,8 @@ class WarehouseDetectorNode(Node):
         )
 
     def convert_point_cloud(self, msg):
-        required_fields = {"x", "y", "z", "intensity"}
-        missing = required_fields - {field.name for field in msg.fields}
-        if missing:
-            raise ValueError(f"PointCloud missing required fields: {sorted(missing)}")
-        point_list = []
-
-        for point in point_cloud2.read_points(
-            msg,
-            field_names=(
-                "x",
-                "y",
-                "z",
-                "intensity",
-            ),
-            skip_nans=True,
-        ):
-            x = float(point[0])
-            y = float(point[1])
-            z = float(point[2])
-            intensity = float(point[3])
-
-            if not (
-                math.isfinite(x)
-                and math.isfinite(y)
-                and math.isfinite(z)
-                and math.isfinite(intensity)
-            ):
-                continue
-
-            # Input format:
-            # x, y, z, intensity
-            point_list.append(
-                [
-                    x,
-                    y,
-                    z,
-                    intensity,
-                ]
-            )
-
-        if not point_list:
-            return np.empty(
-                (0, 4),
-                dtype=np.float32,
-            )
-
-        points = np.asarray(
-            point_list,
-            dtype=np.float32,
-        )
-        # Match extractor filtering after conversion to float32, without normalization.
+        points = decode_xyzi(msg, self.input_settings.intensity_field)
+        # Same raw XYZI conversion/filter as dataset extraction; no scaling.
         return points[np.isfinite(points).all(axis=1)]
 
     def publish_detections(
@@ -927,9 +903,9 @@ class WarehouseDetectorNode(Node):
         )
 
     def accumulate_points(self, msg, current_points):
-        if msg.header.frame_id != EXPECTED_FRAME_ID:
+        if msg.header.frame_id != self.input_settings.expected_frame_id:
             self.point_buffer.clear()
-            raise ValueError(f"Expected {EXPECTED_FRAME_ID}, got {msg.header.frame_id!r}")
+            raise ValueError(f"Expected {self.input_settings.expected_frame_id}, got {msg.header.frame_id!r}")
         stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         if stamp_ns <= 0:
             raise ValueError("PointCloud header timestamp must be positive")
@@ -1041,7 +1017,7 @@ class WarehouseDetectorNode(Node):
             ):
                 score = float(score)
 
-                threshold = self.tracker.keep_score if self.tracking_enabled else SCORE_THRESH
+                threshold = self.tracker.keep_score if self.tracking_enabled else self.input_settings.score_threshold
                 if not math.isfinite(score) or score < threshold:
                     continue
 
@@ -1137,11 +1113,11 @@ class WarehouseDetectorNode(Node):
         self.tracker.reset()
         self.last_tracking_update = None
         self.background_points_publisher.publish(make_xyzi_cloud(
-            Header(frame_id=EXPECTED_FRAME_ID), np.empty((0, 4), dtype=np.float32),
+            Header(frame_id=self.input_settings.expected_frame_id), np.empty((0, 4), dtype=np.float32),
         ))
         self.last_background_cloud_time = None
         self.person_points_publisher.publish(make_xyzi_cloud(
-            Header(frame_id=EXPECTED_FRAME_ID), np.empty((0, 4), dtype=np.float32),
+            Header(frame_id=self.input_settings.expected_frame_id), np.empty((0, 4), dtype=np.float32),
             np.empty(0, dtype=np.uint32),
         ))
         self.last_person_cloud_time = None
@@ -1149,14 +1125,14 @@ class WarehouseDetectorNode(Node):
         for marker_id in range(6):
             marker_array.markers.append(make_delete_marker(
                 marker_id=marker_id,
-                frame_id=EXPECTED_FRAME_ID,
+                frame_id=self.input_settings.expected_frame_id,
                 stamp=Time(),
                 namespace="detection_zones",
             ))
         for marker_id in (0, 1):
             marker_array.markers.append(make_delete_marker(
                 marker_id=marker_id,
-                frame_id=EXPECTED_FRAME_ID,
+                frame_id=self.input_settings.expected_frame_id,
                 stamp=Time(),
                 namespace="lidar_origin",
             ))
@@ -1165,7 +1141,7 @@ class WarehouseDetectorNode(Node):
             marker_array.markers.append(
                 make_delete_marker(
                     marker_id=marker_id,
-                    frame_id=EXPECTED_FRAME_ID,
+                    frame_id=self.input_settings.expected_frame_id,
                     stamp=self.get_clock()
                     .now()
                     .to_msg(),
@@ -1176,7 +1152,7 @@ class WarehouseDetectorNode(Node):
             marker_array.markers.append(
                 make_delete_marker(
                     marker_id=marker_id,
-                    frame_id=EXPECTED_FRAME_ID,
+                    frame_id=self.input_settings.expected_frame_id,
                     stamp=self.get_clock()
                     .now()
                     .to_msg(),
@@ -1204,12 +1180,13 @@ def main(args=None):
 
         rclpy.spin(node)
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
 
     finally:
         if node is not None:
-            node.clear_all_markers()
+            if rclpy.ok():
+                node.clear_all_markers()
             node.destroy_node()
 
         if rclpy.ok():
