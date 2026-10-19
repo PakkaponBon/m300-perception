@@ -1,0 +1,150 @@
+diff --git a/pcdet/datasets/__init__.py b/pcdet/datasets/__init__.py
+index 47c3900..1cb9f04 100644
+--- a/pcdet/datasets/__init__.py
++++ b/pcdet/datasets/__init__.py
+@@ -12,7 +12,7 @@ from .waymo.waymo_dataset import WaymoDataset
+ from .pandaset.pandaset_dataset import PandasetDataset
+ from .lyft.lyft_dataset import LyftDataset
+ from .once.once_dataset import ONCEDataset
+-from .argo2.argo2_dataset import Argo2Dataset
++#from .argo2.argo2_dataset import Argo2Dataset
+ from .custom.custom_dataset import CustomDataset
+ 
+ __all__ = {
+@@ -24,7 +24,7 @@ __all__ = {
+     'LyftDataset': LyftDataset,
+     'ONCEDataset': ONCEDataset,
+     'CustomDataset': CustomDataset,
+-    'Argo2Dataset': Argo2Dataset
++   # 'Argo2Dataset': Argo2Dataset
+ }
+ 
+ 
+diff --git a/pcdet/datasets/custom/custom_dataset.py b/pcdet/datasets/custom/custom_dataset.py
+index 3715210..f537302 100644
+--- a/pcdet/datasets/custom/custom_dataset.py
++++ b/pcdet/datasets/custom/custom_dataset.py
+@@ -56,11 +56,15 @@ class CustomDataset(DatasetTemplate):
+         gt_boxes = []
+         gt_names = []
+         for line in lines:
+-            line_list = line.strip().split(' ')
++            line_list = line.strip().split()
++            if not line_list:
++                continue
++            if len(line_list) != 8:
++                raise ValueError(f'{label_file}: expected 7 box values and class name')
+             gt_boxes.append(line_list[:-1])
+             gt_names.append(line_list[-1])
+ 
+-        return np.array(gt_boxes, dtype=np.float32), np.array(gt_names)
++        return np.array(gt_boxes, dtype=np.float32).reshape(-1, 7), np.array(gt_names, dtype=str)
+ 
+     def get_lidar(self, idx):
+         lidar_file = self.root_path / 'points' / ('%s.npy' % idx)
+@@ -118,15 +122,25 @@ class CustomDataset(DatasetTemplate):
+             from ..kitti.kitti_object_eval_python import eval as kitti_eval
+             from ..kitti import kitti_utils
+ 
+-            kitti_utils.transform_annotations_to_kitti_format(eval_det_annos, map_name_to_kitti=map_name_to_kitti)
++            # Avoid truncating person -> Pedestrian in fixed-width NumPy strings.
++            for anno in eval_det_annos + eval_gt_annos:
++                anno['name'] = anno['name'].astype(object)
++            kitti_utils.transform_annotations_to_kitti_format(eval_det_annos, map_name_to_kitti=map_name_to_kitti)
+             kitti_utils.transform_annotations_to_kitti_format(
+                 eval_gt_annos, map_name_to_kitti=map_name_to_kitti,
+                 info_with_fakelidar=self.dataset_cfg.get('INFO_WITH_FAKELIDAR', False)
+             )
+             kitti_class_names = [map_name_to_kitti[x] for x in class_names]
+-            ap_result_str, ap_dict = kitti_eval.get_official_eval_result(
+-                gt_annos=eval_gt_annos, dt_annos=eval_det_annos, current_classes=kitti_class_names
+-            )
++            if self.dataset_cfg.get('EVAL_USE_TORCH_IOU', False):
++                from unittest.mock import patch
++                from .torch_eval_overlap import rotate_overlap
++                # Scoped replacement: restore the normal evaluator after this call.
++                with patch.object(kitti_eval, 'rotate_iou_gpu_eval', rotate_overlap):
++                    ap_result_str, ap_dict = kitti_eval.get_official_eval_result(
++                        gt_annos=eval_gt_annos, dt_annos=eval_det_annos, current_classes=kitti_class_names)
++            else:
++                ap_result_str, ap_dict = kitti_eval.get_official_eval_result(
++                    gt_annos=eval_gt_annos, dt_annos=eval_det_annos, current_classes=kitti_class_names)
+             return ap_result_str, ap_dict
+ 
+         eval_det_annos = copy.deepcopy(det_annos)
+diff --git a/pcdet/datasets/dataset.py b/pcdet/datasets/dataset.py
+index c1a7f6b..d94b2a7 100644
+--- a/pcdet/datasets/dataset.py
++++ b/pcdet/datasets/dataset.py
+@@ -209,7 +209,8 @@ class DatasetTemplate(torch_data.Dataset):
+             data_dict=data_dict
+         )
+ 
+-        if self.training and len(data_dict['gt_boxes']) == 0:
++        if (self.training and len(data_dict['gt_boxes']) == 0
++                and not self.dataset_cfg.get('ALLOW_EMPTY_GT', False)):
+             new_index = np.random.randint(self.__len__())
+             return self.__getitem__(new_index)
+ 
+diff --git a/pcdet/models/detectors/detector3d_template.py b/pcdet/models/detectors/detector3d_template.py
+index 91e44bd..4426eec 100644
+--- a/pcdet/models/detectors/detector3d_template.py
++++ b/pcdet/models/detectors/detector3d_template.py
+@@ -364,7 +364,7 @@ class Detector3DTemplate(nn.Module):
+ 
+         logger.info('==> Loading parameters from checkpoint %s to %s' % (filename, 'CPU' if to_cpu else 'GPU'))
+         loc_type = torch.device('cpu') if to_cpu else None
+-        checkpoint = torch.load(filename, map_location=loc_type)
++        checkpoint = torch.load(filename, map_location=loc_type, weights_only=False)
+         model_state_disk = checkpoint['model_state']
+         if not pre_trained_path is None:
+             pretrain_checkpoint = torch.load(pre_trained_path, map_location=loc_type)
+@@ -389,7 +389,7 @@ class Detector3DTemplate(nn.Module):
+ 
+         logger.info('==> Loading parameters from checkpoint %s to %s' % (filename, 'CPU' if to_cpu else 'GPU'))
+         loc_type = torch.device('cpu') if to_cpu else None
+-        checkpoint = torch.load(filename, map_location=loc_type)
++        checkpoint = torch.load(filename, map_location=loc_type, weights_only=False)
+         epoch = checkpoint.get('epoch', -1)
+         it = checkpoint.get('it', 0.0)
+ 
+diff --git a/pcdet/datasets/custom/torch_eval_overlap.py b/pcdet/datasets/custom/torch_eval_overlap.py
+new file mode 100644
+index 0000000..97553df
+--- /dev/null
++++ b/pcdet/datasets/custom/torch_eval_overlap.py
+@@ -0,0 +1,33 @@
++"""Opt-in KITTI evaluation overlap using the installed OpenPCDet CUDA op."""
++import numpy as np
++import torch
++from ...ops.iou3d_nms import iou3d_nms_cuda
++
++
++def rotate_overlap(boxes, query_boxes, criterion=-1, device_id=0):
++    # KITTI evaluator only requests IoU (-1) or intersection area (2).
++    if criterion not in (-1, 2):
++        raise ValueError('Only IoU and intersection area are supported')
++    if len(boxes) == 0 or len(query_boxes) == 0:
++        return np.zeros((len(boxes), len(query_boxes)), dtype=np.float32)
++    device = torch.device('cuda', device_id)
++
++    def convert(values):
++        out = np.zeros((len(values), 7), dtype=np.float32)
++        out[:, :2] = values[:, :2]
++        out[:, 3:5] = values[:, 2:4]
++        out[:, 5] = 1
++        # Numba/KITTI BEV angles are clockwise; CUDA op expects counterclockwise.
++        out[:, 6] = -values[:, 4]
++        return torch.as_tensor(out, device=device).contiguous()
++
++    with torch.cuda.device(device):
++        a, b = convert(boxes), convert(query_boxes)
++        overlap = torch.zeros((len(a), len(b)), device=device, dtype=torch.float32)
++        iou3d_nms_cuda.boxes_overlap_bev_gpu(a, b, overlap)
++        area_a = (a[:, 3] * a[:, 4])[:, None]
++        area_b = (b[:, 3] * b[:, 4])[None, :]
++        overlap = torch.minimum(overlap.clamp_min(0), torch.minimum(area_a, area_b))
++        if criterion == -1:
++            overlap = overlap / (area_a + area_b - overlap).clamp_min(1e-8)
++        return overlap.cpu().numpy()
+

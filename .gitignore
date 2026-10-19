@@ -1,0 +1,49 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python / editors / operating systems
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+openpcdet_env/
+.vscode/
+.idea/
+.DS_Store
+*Zone.Identifier*
+
+# ROS workspaces and compiled extensions
+build/
+install/
+log/
+*.so
+*.o
+*.a
+
+# Private datasets, checkpoints, exports and generated output
+data/
+datasets/
+models/
+checkpoints/
+runs/
+output/
+visual_outputs/
+*.mcap
+*.db3
+*.pcd
+*.bin
+*.npy
+*.npz
+*.pkl
+*.pth
+*.pt
+*.onnx
+*.zip
+*.bag
+events.out.tfevents.*
+third_party/OpenPCDet/

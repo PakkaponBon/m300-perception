@@ -1,0 +1,103 @@
+# Independent geometric occupancy view; no AI model and not a map.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Metre grid
+      Enabled: true
+      Value: true
+      Cell Size: 1
+      Plane: XY
+      Plane Cell Count: 20
+      Alpha: 0.35
+      Color: 90; 90; 90
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/Axes
+      Name: LiDAR origin (+X red, +Y green)
+      Enabled: true
+      Value: true
+      Reference Frame: <Fixed Frame>
+      Length: 0.3
+      Radius: 0.01
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Raw context (latest frame)
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /pointcloud
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Queue Size: 1
+      Position Transformer: XYZ
+      Color Transformer: FlatColor
+      Color: 145; 145; 145
+      Alpha: 0.3
+      Style: Points
+      Size (Pixels): 2
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Occupied-region points (red)
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /front_obstacle/points
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Queue Size: 1
+      Position Transformer: XYZ
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+      Alpha: 1
+      Style: Points
+      Size (Pixels): 3
+      # Short visual persistence only; occupancy always uses ONE input frame.
+      # Points age out even if the publisher is stopped unexpectedly.
+      Decay Time: 0.2
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Front region and data status
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /front_obstacle/markers
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Namespaces:
+        front_obstacle_roi: true
+  Enabled: true
+  Global Options:
+    Background Color: 20; 20; 20
+    Fixed Frame: m300_lidar
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Target Frame: <Fixed Frame>
+      Value: TopDownOrtho (rviz)
+      Angle: 0
+      Scale: 70
+      X: 0
+      Y: 0
+      Near Clip Distance: 0.01
+    Saved: ~
+Window Geometry:
+  Width: 1100
+  Height: 800

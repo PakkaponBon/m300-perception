@@ -1,0 +1,4 @@
+# Only the NumPy-based dataset tools and offline unit tests.
+# Extraction additionally needs ROS 2 Humble rosbag2_py + MCAP storage.
+# AI runtime/training need a separately installed OpenPCDet CUDA environment.
+numpy>=1.23,<3

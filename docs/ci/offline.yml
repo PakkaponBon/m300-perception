@@ -1,0 +1,18 @@
+# Inactive template: copy to .github/workflows/offline.yml to enable.
+# Publishing workflow files requires appropriate GitHub authorization.
+name: Offline checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  source-and-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install -r requirements-offline.txt
+      - run: python -m compileall -q runtime tools tests
+      - run: bash -n scripts/start_m300_detection.sh scripts/start_m300_obstacle.sh
+      - run: python -m unittest discover -s tests -v

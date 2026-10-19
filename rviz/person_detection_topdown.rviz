@@ -1,0 +1,107 @@
+# Sensor-centred top-down visualization, NOT an occupancy map.
+# Full raw /pointcloud is not displayed; only sparse background context.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Metre grid
+      Enabled: true
+      Value: true
+      Alpha: 0.35
+      Cell Size: 1
+      Plane: XY
+      Plane Cell Count: 40
+      Color: 90; 90; 90
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/Axes
+      Name: LiDAR origin
+      Enabled: true
+      Value: true
+      Reference Frame: <Fixed Frame>
+      Length: 0.3
+      Radius: 0.01
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Sparse surroundings (not a map)
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /ai_detections/background_points
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Queue Size: 1
+      Position Transformer: XYZ
+      Color Transformer: FlatColor
+      Color: 145; 145; 145
+      Alpha: 0.45
+      Style: Points
+      Size (Pixels): 2
+      # Latest raw-frame slice only; no background accumulation.
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Person points by zone (red-yellow-green)
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /ai_detections/person_points
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Queue Size: 1
+      Position Transformer: XYZ
+      Color Transformer: RGB8
+      Alpha: 1
+      Style: Points
+      Size (Pixels): 3
+      # Show the latest prediction only; the detector already accumulates 0.3 s.
+      # Empty outputs clear this display on lost detections or input timeout.
+      Decay Time: 0
+    - Class: rviz_default_plugins/MarkerArray
+      Name: LiDAR, zones and person detections
+      Enabled: true
+      Value: true
+      Topic:
+        Value: /ai_detections/boxes
+        Depth: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Namespaces:
+        lidar_origin: true
+        detection_zones: true
+        ai_3d_boxes: true
+        ai_3d_labels: true
+  Enabled: true
+  Global Options:
+    Background Color: 20; 20; 20
+    Fixed Frame: m300_lidar
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Target Frame: <Fixed Frame>
+      Value: TopDownOrtho (rviz)
+      Angle: 0
+      Scale: 35
+      X: 0
+      Y: 0
+      Near Clip Distance: 0.01
+    Saved: ~
+Window Geometry:
+  Width: 1200
+  Height: 850
